@@ -1,0 +1,13 @@
+name = statistics
+core = 7.x
+package = delta
+version = 7.x-1.0
+project = statistics
+dependencies[] = eck
+dependencies[] = eck
+dependencies[] = session_api
+dependencies[] = features
+features[eck_bundle][] = statistics_recipe_view
+features[eck_entity_type][] = statistics
+features[features_api][] = api:2
+project path = sites/all/modules/features
