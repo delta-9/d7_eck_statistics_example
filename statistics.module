@@ -1,0 +1,178 @@
+<?php
+/**
+ * @file
+ * Code for the statistics feature.
+ */
+
+include_once 'statistics.features.inc';
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function statistics_preprocess_node(&$variables) {
+  global $user;
+  $view_mode = $variables['view_mode'];
+  $node = $variables['node'];
+  if (in_array($view_mode, array('full', 'default')) &&
+      in_array($node->type, array('recipe', 'playlist'))) {
+
+    $sid = statistics_get_sid($user->uid, TRUE);
+
+    $statistic_type = 'recipe_view';
+    if ($node->type == 'playlist') {
+      $statistic_type = 'playlist_view';
+    }
+
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'statistics')
+    ->propertyCondition('type', $statistic_type)
+    ->propertyCondition('entity', $node->nid)
+    ->propertyCondition('uid', $user->uid)
+    ->propertyCondition('sid', $sid);
+
+    $results = $query->execute();
+    if (empty($results['statistics'])) {
+      // If there is no $stat loggued in.
+      $stat = entity_create('statistics', array(
+          'uid' => $user->uid,
+          'sid' => $sid,
+          'type' => $statistic_type,
+          'entity' => $node->nid,
+          'created' => REQUEST_TIME,
+          'changed' => REQUEST_TIME,
+          'count' => 1,
+        )
+      );
+      entity_save('statistics', $stat);
+    }
+    else {
+      $stat = entity_load_single('statistics', key($results['statistics']));
+      $stat->count++;
+      entity_save('statistics', $stat);
+    }
+
+  }
+}
+
+/**
+ * Implements hook_user_login().
+ */
+function statistics_user_login(&$edit, &$account) {
+  // Migrate anonymous statistics to this user's account.
+  if ($sid = statistics_get_sid(0)) {
+    // Get a list of statistics IDs that will be moved over.
+    $statistics_ids_to_convert = db_select('eck_statistics', 's')
+    ->fields('s', array('id'))
+    ->condition('uid', 0)
+    ->condition('sid', $sid)
+    ->execute()
+    ->fetchCol();
+    if (!empty($statistics_ids_to_convert)) {
+      $statistics_to_convert = entity_load('statistics', $statistics_ids_to_convert);
+      // Convert anonymous statistics to their authenticated account.
+      foreach ($statistics_to_convert as $statistic_to_convert) {
+        // Check for an existing statistic.
+        $query = new EntityFieldQuery();
+        $query->entityCondition('entity_type', 'statistics')
+        ->propertyCondition('type', $statistic_to_convert->type)
+        ->propertyCondition('entity', $statistic_to_convert->entity)
+        ->propertyCondition('uid', $account->uid);
+
+        $results = $query->execute();
+        if (empty($results['statistics'])) {
+          // No statistic recorded for this entity.
+          $statistic_to_convert->sid = 0;
+          $statistic_to_convert->uid = $account->uid;
+          entity_save('statistic', $statistic_to_convert);
+        }
+        else {
+          // Update the existing statistic.
+          $existing_statistic = entity_load_single('statistics', key($results['statistics']));
+          $existing_statistic->count += $statistic_to_convert->count;
+          entity_save('statistics', $existing_statistic);
+        }
+      }
+      // Delete all duplicate statistics.
+      $query = db_delete('eck_statistics');
+      $query->condition('sid', $sid);
+      $query->execute();
+    }
+  }
+}
+
+/**
+ * Implements hook_session_api_cleanup().
+ *
+ * Clear out anonymous user statistics during Session API cleanup.
+ */
+function statistics_session_api_cleanup($outdated_sids = array()) {
+  if (!empty($outdated_sids)) {
+    db_delete('statistics')->condition('sid', $outdated_sids, 'IN')->execute();
+  }
+}
+
+/**
+ * Set the Session ID for a user. Utilizes the Session API module.
+ *
+ * Creates a Session ID for an anonymous user and returns it. It will always
+ * return 0 for registered users.
+ *
+ * @param int $uid
+ *   (optional) The user ID to create a session ID for. Defaults to the
+ *   current user.
+ * @param bool $create
+ *   (optional) Determines whether a session should be created if it doesn't
+ *   exist yet. Defaults to TRUE.
+ *
+ * @return
+ *   The session ID, if a session was created. If not, the return value is 0.
+ *
+ * @see statistics_get_sid()
+ */
+function statistics_set_sid($uid = NULL, $create = TRUE) {
+  $sids = &drupal_static(__FUNCTION__, array());
+
+  if (!isset($uid)) {
+    $uid = $GLOBALS['user']->uid;
+  }
+
+  // Set the sid if none has been set yet. If the caller specified to create an
+  // sid and we have an invalid one (-1), create it.
+  if (!isset($sids[$uid]) || ($sids[$uid] == -1 && $create)) {
+    if (module_exists('session_api') && session_api_available() && $uid == 0) {
+      // This returns one of the following:
+      // - -1. This indicates that no session exists and none was created.
+      // - A positive integer with the Session ID when it does exist.
+      $sids[$uid] = session_api_get_sid($create);
+    }
+    else {
+      $sids[$uid] = 0;
+    }
+  }
+
+  // Keep the -1 case internal and let the outside world only distinguish two
+  // cases: (1) there is an SID; (2) there is no SID (-> 0).
+  return $sids[$uid] == -1 ? 0 : $sids[$uid];
+}
+
+/**
+ * Get the Session ID for a user. Utilizes the Session API module.
+ *
+ * Gets the Session ID for an anonymous user. It will always return 0 for
+ * registered users.
+ *
+ * @param int $uid
+ *   (optional) The user ID to return the session ID for. Defaults to the
+ *   current user.
+ * @param bool $create
+ *   (optional) Determines whether a session should be created if it doesn't
+ *   exist yet. Defaults to FALSE.
+ *
+ * @return
+ *   The session ID, if the session exists. If not, the return value is 0.
+ *
+ * @see statistics_set_sid()
+ */
+function statistics_get_sid($uid = NULL, $create = FALSE) {
+  return statistics_set_sid($uid, $create);
+}
